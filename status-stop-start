@@ -1,9 +1,0 @@
-on:
-  workflow_dispatch:
-    inputs:
-      app_name:
-        description: "Application name"
-        type: choice
-        required: true
-        options:
-        - tomcat

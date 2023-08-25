@@ -1,0 +1,234 @@
+name: Tools - Tomcat DEV/TEST Start and Stop Service
+# This workflow is used to perform either start/stop/restart/status task on the environment in the DEV/TEST account.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: "Application name"
+        type: choice
+        required: true
+        options:
+        - tomcat
+      environment:
+        description: "Select environment name"
+        type: choice
+        required: true
+        options:
+        - 'rc3_dev-DEV'
+        - 'cup_sit-DEV'
+        - 'rc3_sit-DEV'
+        - 'rc3_sittt-DEV'
+        - 'rc3_sittt2-DEV'
+      task:
+        description: "Action to be performed"
+        type: choice
+        required: true
+        options:
+        - status
+        - stop
+        - start
+        - restart
+      task_timeout:
+        description: "Timeout for completeing the task (in minutes)"
+        type: string
+        required: true
+        default: "20"
+
+env:
+  repository_owner: Direct-Line-Group
+  repository_devops: b4c-sdlc-infrastructure-tooling
+
+jobs:
+
+  set_env_info:
+    runs-on: ubuntu-latest
+    outputs:
+      environment_name: ${{ steps.set-env-tier-name.outputs.environment_name }}
+      environment_tier: ${{ steps.set-env-tier-name.outputs.environment_tier }}
+    steps:
+      - name: Set environment tier and name
+        id: set-env-tier-name
+        run: |
+          environment_name=$(echo "${{ inputs.environment }}" | cut -d"-" -f1)
+          echo "environment_name=$environment_name" >> $GITHUB_OUTPUT
+          environment_tier=$(echo "${{ inputs.environment }}" | cut -d"-" -f2)
+          echo "environment_tier=$environment_tier" >> $GITHUB_OUTPUT
+
+  parameter:
+    runs-on: ubuntu-latest
+    needs: set_env_info
+    steps:
+      - name: Parameters used for Dev/Test Start and Stop Service job
+        run: |
+          echo "::notice::environment_tier : ${{ needs.set_env_info.outputs.environment_tier }}"
+          echo "::notice::environment_name : ${{ needs.set_env_info.outputs.environment_name }}"
+          echo "::notice::app_name : ${{ inputs.app_name }}"
+          echo "::notice::task : ${{ inputs.task }}"
+          echo "::notice::task_timeout : ${{ inputs.task_timeout }}"
+
+  get_env_info:
+    name: Get information about environment
+    needs: set_env_info
+    uses: Direct-Line-Group/b4c-sdlc-infrastructure-tooling/.github/workflows/platform-get-env-info.yml@develop
+    with:
+      environment_tier: ${{ needs.set_env_info.outputs.environment_tier }}
+      environment_name: ${{ needs.set_env_info.outputs.environment_name }}
+      app_name: ${{ inputs.app_name }}
+    secrets: inherit
+
+  set_host_info:
+    runs-on: ubuntu-latest
+    outputs:
+      host_name: ${{ steps.set-host-info.outputs.host_name }}
+      app_hostname: ${{ steps.set-host-info.outputs.app_hostname }}
+    needs: [get_env_info,set_env_info]
+    steps:
+      - name: Set hostname name
+        id: set-host-info
+        run: |
+          host_name=$(echo "${{ needs.get_env_info.outputs.app_hostname }}" | cut -d"." -f1)
+          echo "host_name=$host_name" >> $GITHUB_OUTPUT
+          app_hostname=$(echo "${{ needs.get_env_info.outputs.app_hostname }}")
+          echo "app_hostname=$app_hostname" >> $GITHUB_OUTPUT
+
+  check-available-runner:
+    runs-on: ubuntu-latest
+    needs: [get_env_info]
+    steps:  
+      - name: Check for available runners
+        id: runner-available-check
+        run: |
+          idle_runners=$(curl -s \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${{ secrets.DLG_REPO_TOKEN }}" \
+          https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners \
+          | jq -c '.runners[] | select(.status == "online" and .busy == 'false').name?')
+          
+          if [[ -n $idle_runners ]]; then
+            echo -e "Skipping runner creation. Available runners:\n$idle_runners"
+            echo "skip_get_runner=true" >> $GITHUB_ENV
+          else
+            echo "No idle runners available"
+            echo "skip_get_runner=false" >> $GITHUB_ENV
+          fi
+
+      - name: Trigger workflow to spin-up self-hosted-runner
+        if: ${{ env.skip_get_runner == 'false' }}
+        uses: convictional/trigger-workflow-and-wait@v1.6.5
+        with:
+          owner: ${{ env.repository_owner }}
+          repo: ${{ env.repository_devops }}
+          github_token: ${{ secrets.DLG_REPO_TOKEN }}
+          workflow_file_name: github-runner-deploy-once-default.yml
+          ref: develop
+          wait_interval: 10
+          client_payload: '{
+            "calling_repository_name" : "b4c-platform-automation",
+            "runner_cpu_limit" : "4",
+            "runner_memory_limit" : "24Gi",
+            "one_off_instance_flag" : "enable" }'
+          propagate_failure: true
+          trigger_workflow: true
+          wait_workflow: true
+
+  service-task:
+    name: Perform the task on the server
+    runs-on: self-hosted
+    needs: [check-available-runner, set_host_info, set_env_info]
+    environment:
+      name: ${{ needs.set_env_info.outputs.environment_tier }}
+    steps:
+      - name: Tomcat app status check.
+        if: ${{ inputs.task == 'status' }}
+        uses: garygrossgarten/github-action-ssh@release
+        with:
+          host: ${{ needs.set_host_info.outputs.app_hostname }}
+          username: ${{ secrets.SSH_INSTALL_USERNAME }}
+          password: ${{ secrets.SSH_INSTALL_PASSWORD }}
+          port: 22
+          command: |
+            echo "Tomcat App - Checking the service status"
+            Process_check=$( ps -ef | grep tomcat | grep -v grep | awk '{print $2}' )
+            if [ -z $Process_check ]; then
+              echo "**** Tomcat Process Not Running ****"
+            else
+              echo "**** Tomcat Process Already Running ****"
+            fi
+
+      - name: Stop Tomcat app task.
+        if: ${{ inputs.task == 'stop' }}
+        uses: garygrossgarten/github-action-ssh@release
+        with:
+          host: ${{ needs.set_host_info.outputs.app_hostname }}
+          username: ${{ secrets.SSH_INSTALL_USERNAME }}
+          password: ${{ secrets.SSH_INSTALL_PASSWORD }}
+          port: 22
+          command: |
+            echo "Tomcat App - Checking the service status"
+            Process_check=$( ps -ef | grep tomcat | grep -v grep | awk '{print $2}' )
+            if [ -z $Process_check ]; then
+              echo "**** Tomcat Process Not Running. Hence no need to stop ****"
+            else
+              echo "**** Tomcat Process Already Running. Stopping now ****"
+              sudo service tomcat stop
+              sleep 10
+              Process_check=$( ps -ef | grep tomcat | grep -v grep | awk '{print $2}' )
+              if [ -z $Process_check ]; then
+                echo "**** Tomcat process stopped ****"
+              else
+                echo "**** Tomcat process is still running. Please check with DevOps engineer for further analysis ****"
+              fi
+            fi
+
+      - name: Start Tomcat app task.
+        if: ${{ inputs.task == 'start' }}
+        uses: garygrossgarten/github-action-ssh@release
+        with:
+          host: ${{ needs.set_host_info.outputs.app_hostname }}
+          username: ${{ secrets.SSH_INSTALL_USERNAME }}
+          password: ${{ secrets.SSH_INSTALL_PASSWORD }}
+          port: 22
+          command: |
+            echo "Tomcat App - Checking the service status"
+            Process_check=$( ps -ef | grep tomcat | grep -v grep | awk '{print $2}' )
+            if [ -z $Process_check ]; then
+              echo "**** Tomcat Process Not Running. Starting now ****"
+              sudo service tomcat start
+              sleep 5
+              Process_check=$( ps -ef | grep tomcat | grep -v grep | awk '{print $2}' )
+              if [ -z $Process_check ]; then
+                echo "**** Tomcat process not running. Please check with DevOps engineer for further analysis ****"
+              else
+                echo "**** Tomcat process is running now ****"
+              fi
+            else
+              echo "**** Tomcat process is already running ****"
+            fi
+
+      - name: Restart Tomcat app task.
+        if: ${{ inputs.task == 'restart' }}
+        uses: garygrossgarten/github-action-ssh@release
+        with:
+          host: ${{ needs.set_host_info.outputs.app_hostname }}
+          username: ${{ secrets.SSH_INSTALL_USERNAME }}
+          password: ${{ secrets.SSH_INSTALL_PASSWORD }}
+          port: 22
+          command: |
+            echo "Tomcat App - Stopping the service now"
+            sudo service tomcat stop
+            sleep 10
+            Process_check=$( ps -ef | grep tomcat | grep -v grep | awk '{print $2}' )
+            if [ -z $Process_check ]; then
+              echo "**** Tomcat process stopped. Starting now ****"
+            else
+              echo "**** Tomcat process is still running. Please check with DevOps engineer for further analysis ****"
+            fi
+            sudo service tomcat start
+            sleep 5
+            Process_check=$( ps -ef | grep tomcat | grep -v grep | awk '{print $2}' )
+            if [ -z $Process_check ]; then
+              echo "**** Tomcat process not running. Please check with DevOps engineer for further analysis ****"
+            else
+              echo "**** Tomcat process is running now ****"
+            fi
