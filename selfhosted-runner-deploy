@@ -1,0 +1,119 @@
+name: self-hosted-runner-deploy
+on:
+  workflow_call:
+    inputs:
+      runner_repository_name:
+        required: true
+        type: string
+      runner_cpu_limit:
+        required: true
+        type: string
+      runner_cpu_request:
+        required: true
+        type: string
+      runner_memory_limit:
+        required: true
+        type: string
+      runner_memory_request:
+        required: true
+        type: string
+      one_off_instance_flag:
+        description: "One-off Instance Flag"
+        type: string
+        default: "enable"
+      
+      
+    outputs:
+      runnername:
+        description: "Name of the self hosted runner"
+        value: ${{ jobs.create-runner.outputs.runnername }}
+
+env:
+  namespace_name: self-hosted-runners
+  user_pat: ${{ secrets.DLG_REPO_TOKEN }}
+  runner_repository_folder: k8s
+  runner_repository_owner: "Direct-Line-Group"
+  region: eu-west-1
+  eks_cluster_name: eks-sdlc-tooling
+
+jobs:
+  create-runner:
+    name: Create runner
+    runs-on: ubuntu-latest
+    outputs:
+      runnername: ${{ steps.runnerstep.outputs.runner_name }}
+    steps:
+        
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+       aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+       aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+       aws-region: ${{ env.region }}
+          
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+      
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      
+    - name: Connect to EKS
+      run: |
+        aws eks --region ${{ env.region }} update-kubeconfig --name ${{ env.eks_cluster_name }}
+        
+    - name: Spinning up self hosted runner
+      id: runnerstep
+      run: |
+        ls -la
+        cd ${{ env.runner_repository_folder }}/k8s-github-runners
+        runnername=`echo "${GITHUB_WORKFLOW}-run${{ github.run_number }}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-'` 
+        echo "runnername=$runnername"
+        echo "runner_name=${runnername}" >> $GITHUB_OUTPUT
+        sed -i "s/job-name/${runnername}/ g" job.yaml
+        sed -i "s/runner_labels/${runnername}/ g" job.yaml
+        sed -i "s/namespace-name/${{ env.namespace_name }}/ g" job.yaml 
+        sed -i "s/user_pat/${{ env.user_pat }}/ g" job.yaml 
+        sed -i "s/repository-owner/${{ env.runner_repository_owner }}/ g" job.yaml
+        sed -i "s/repository-name/${{ inputs.runner_repository_name }}/ g" job.yaml
+        sed -i "s/cpu_limit/${{ inputs.runner_cpu_limit }}/ g" job.yaml
+        sed -i "s/memory_limit/${{ inputs.runner_memory_limit }}/ g" job.yaml
+        sed -i "s/cpu_request/${{ inputs.runner_cpu_request }}/ g" job.yaml
+        sed -i "s/memory_request/${{ inputs.runner_memory_request }}/ g" job.yaml
+        sed -i "s/one_off_instance_flag/${{ inputs.one_off_instance_flag }}/ g" job.yaml
+        cat job.yaml
+        echo "checking connection to EKS"
+        kubectl get namespace
+        kubectl apply -f job.yaml
+        pod_exist=$(kubectl get pods --namespace=${{ env.namespace_name }} --selector=job-name=$runnername --output=jsonpath='{.items[*].metadata.name}')
+        echo "pod_exist=$pod_exist"
+        loop=0
+        while [ -z "$pod_exist" ]
+        do
+          if [ $loop -gt 11 ] 
+          then
+            echo "Couldn't get job pod. Exiting ..."
+            exit 1
+          fi
+          sleep 5
+          pod_exist=$(kubectl get pods --namespace=${{ env.namespace_name }} --selector=job-name=$runnername --output=jsonpath='{.items[*].metadata.name}')
+          echo "pod_exist=$pod_exist"
+          loop=$((loop+1))
+        done
+        ### checking registering
+        pod_name=$(kubectl --request-timeout=30 get pods --namespace=${{ env.namespace_name }} --selector=job-name=$runnername --output=jsonpath='{.items[*].metadata.name}')
+        echo "pod_name=$pod_name"
+        status=$((kubectl --request-timeout=30 logs $pod_name --namespace=${{ env.namespace_name }} | grep "Listening for jobs" || true ) | wc -l)
+        echo "status=$status"
+        loop=0
+        while [ $status -lt 1 ]
+        do
+          if [ $loop -gt 21 ] 
+          then
+            echo "Runner: $runnername not online. Exiting ..."
+            exit 1
+          fi
+          sleep 20
+          status=$((kubectl --request-timeout=30 logs $pod_name --namespace=${{ env.namespace_name }} | grep "Listening for Jobs" || true ) | wc -l)
+          loop=$((loop+1))
+        done
