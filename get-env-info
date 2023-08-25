@@ -1,0 +1,178 @@
+name: Get information about AWS environment 
+# This workflow will be used to get the server name and hostname of the server based on the environment name/tier and app name passed from the calling module. 
+# Same workflow can be used to fetch the server name and hostname for the multi nodes environments as well. To fetch multi node details we need multi_node_flag as true from the calling module 
+on:
+  workflow_call:
+    inputs:
+      environment_tier:
+        description: "The environment tier"
+        type: string
+      environment_name:
+        description: "The environment to deploy"
+        required: true
+        type: string
+      app_name:
+        description: "The application name that will be deployed"
+        type: string
+        required: true
+      multi_node_flag:
+        description: "Multi Node Flag"
+        type: string
+        default: "false"
+        
+    outputs:
+      app_servername:
+        description: "The environment name"
+        value: ${{ jobs.get-env-info.outputs.server_name_output }}
+      app_hostname:
+        description: "The environment hostname"
+        value: ${{ jobs.get-env-info.outputs.host_name_output }}
+      app_url:
+        description: "The environment url"
+        value: ${{ jobs.get-env-info.outputs.app_url_output }}
+      multinode_serverhostname:
+        description: "The multinode server host name"
+        value: ${{ jobs.get-env-info.outputs.multinode_serverhostname_output }}
+      multinode_servername:
+        description: "The multinode server name"
+        value: ${{ jobs.get-env-info.outputs.multinode_servername_output }}
+
+jobs:
+
+  get-env-info:
+    outputs:
+      server_name_output: ${{ steps.get_info.outputs.app_servername }}
+      host_name_output: ${{ steps.get_info.outputs.app_hostname }}
+      app_url_output: ${{ steps.get_info.outputs.app_url }}
+      multinode_serverhostname_output: ${{ steps.get_info_multinode.outputs.multinode_serverhostname }}
+      multinode_servername_output: ${{ steps.get_info_multinode.outputs.multinode_servername }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout docker repository
+        uses: actions/checkout@v3
+          
+      - name: Configure AWS DEV credentials
+        if: ${{ inputs.environment_tier == 'DEV' }} 
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_READ_ACCESS_KEY_DEV }}
+          aws-secret-access-key: ${{ secrets.AWS_READ_SECRET_KEY_DEV }}
+          aws-region: eu-west-1
+          
+      - name: Configure AWS TEST credentials
+        if: ${{ inputs.environment_tier == 'TEST' }}
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_READ_ACCESS_KEY_TEST }}
+          aws-secret-access-key: ${{ secrets.AWS_READ_SECRET_KEY_TEST }}
+          aws-region: eu-west-1
+          
+      - name: Configure AWS PROD credentials
+        if: ${{ inputs.environment_tier == 'PROD' || inputs.environment_tier == 'PREPROD' || inputs.environment_tier == 'FOF' }} 
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_READ_ACCESS_KEY_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_READ_SECRET_KEY_PROD }}
+          aws-region: eu-west-1
+
+      - name: Get environment information (Single node)
+        id: get_info
+        if: ${{ inputs.multi_node_flag == 'false' }}
+        run: |
+        
+          if [[ ${{ inputs.app_name }} == "pc" ]]; then
+            env_service=policy
+          elif [[ ${{ inputs.app_name }} == "bc" ]]; then
+            env_service=billing
+          else
+            env_service=claims
+          fi
+          
+          if [[ ${{ inputs.environment_tier }} == "DEV" ]]; then
+            hostedzone=${{ secrets.DEV_HOSTEDZONE }}
+          elif [[ ${{ inputs.environment_tier }} == "TEST" ]]; then
+            hostedzone=${{ secrets.TEST_HOSTEDZONE }}
+          else
+            hostedzone=${{ secrets.PROD_HOSTEDZONE }}
+          fi
+          
+          env_name=$(aws ec2 describe-instances --filters Name=tag:gw_envid,Values=${{ inputs.environment_name }} Name=tag:service,Values=$env_service  --query "Reservations[*].Instances[*].Tags[?Key == 'Name'].Value" --output text)
+          env_name=${env_name,,}
+
+          env_ipaddr=$(aws ec2 describe-instances --filters Name=tag:gw_envid,Values=${{ inputs.environment_name }} Name=tag:service,Values=$env_service --query "Reservations[*].Instances[*].PrivateIpAddress" --output text)
+          env_instanceid=$(aws ec2 describe-instances --filters Name=tag:gw_envid,Values=${{ inputs.environment_name }} Name=tag:service,Values=$env_service --query "Reservations[*].Instances[*].InstanceId" --output text)
+
+          env_hostname=$(aws route53 list-resource-record-sets --hosted-zone-id $hostedzone --query "ResourceRecordSets[?ResourceRecords[?Value == '$env_ipaddr'] && Type == 'A'].Name" --output text)
+          env_hostname=${env_hostname::-1}
+
+          env_elb=$(aws elb describe-load-balancers --query "LoadBalancerDescriptions[?contains(Instances[*].InstanceId,'$env_instanceid')].DNSName" --output text)
+
+          env_appurl=$(aws route53 list-resource-record-sets --hosted-zone-id $hostedzone --query "ResourceRecordSets[?ResourceRecords[?Value == '$env_elb'] && Type == 'CNAME'].Name" --output text)
+          env_appurl=${env_appurl::-1}
+          env_appurl=https://$env_appurl/${{ inputs.app_name }}
+
+          echo "app_servername=$env_name" >> $GITHUB_OUTPUT
+          echo "app_hostname=$env_hostname" >> $GITHUB_OUTPUT
+          echo "app_url=$env_appurl" >> $GITHUB_OUTPUT
+
+      - name: Get environment information (Multi node)
+        id: get_info_multinode
+        if: ${{ inputs.multi_node_flag == 'true' }}
+        run: |
+        
+          if [[ ${{ inputs.app_name }} == "pc" ]]; then
+            env_service=policy
+          elif [[ ${{ inputs.app_name }} == "bc" ]]; then
+            env_service=billing
+          else
+            env_service=claims
+          fi
+          
+          if [[ ${{ inputs.environment_tier }} == "DEV" ]]; then
+            hostedzone=${{ secrets.DEV_HOSTEDZONE }}
+          elif [[ ${{ inputs.environment_tier }} == "TEST" ]]; then
+            hostedzone=${{ secrets.TEST_HOSTEDZONE }}
+          else
+            hostedzone=${{ secrets.PROD_HOSTEDZONE }}
+          fi
+
+          array_order=()
+          array_serverhostname=()
+          array_servername=()
+
+          for number in $(aws ec2 describe-instances --filters Name=tag:gw_envid,Values=${{ inputs.environment_name }} Name=tag:service,Values=$env_service --query "Reservations[*].Instances[*].Tags[?Key == 'gw_start_order'].Value" --output text)
+          do
+            number=${number,,}
+            array_order+=($number)
+          done
+
+          IFS=$'\n'
+          order_maxvalue=$(echo "${array_order[*]}" | sort -nr | head -n1)
+          echo "order_maxvalue : $order_maxvalue"
+
+          for (( i=1; i<=$order_maxvalue; i++ ))
+          do
+            echo "Getting info for node no. $i"
+
+            env_ip=$(aws ec2 describe-instances --filters Name=tag:gw_envid,Values=${{ inputs.environment_name }} Name=tag:service,Values=$env_service Name=tag:gw_start_order,Values=$i --query "Reservations[*].Instances[*].PrivateIpAddress" --output text)
+            if [ -z $env_ip ]; then
+              echo "There is no node with start_order value $i"
+              continue
+            else
+              env_hostname=$(aws route53 list-resource-record-sets --hosted-zone-id $hostedzone --query "ResourceRecordSets[?ResourceRecords[?Value == '$env_ip'] && Type == 'A'].Name" --output text)
+              env_hostname=${env_hostname::-1}
+              array_serverhostname+=($env_hostname)
+              env_name=$(aws ec2 describe-instances --filters Name=tag:gw_envid,Values=${{ inputs.environment_name }} Name=tag:service,Values=$env_service Name=tag:gw_start_order,Values=$i --query "Reservations[*].Instances[*].Tags[?Key == 'Name'].Value" --output text)
+              env_name=${env_name,,}
+              array_servername+=($env_name)
+            fi
+          done
+          
+          multinode_serverhostname=$(jq --compact-output --null-input '$ARGS.positional' --args -- "${array_serverhostname[@]}")
+          echo "multinode_serverhostname=$multinode_serverhostname" >> $GITHUB_OUTPUT
+          echo "multinode_serverhostname=$multinode_serverhostname"
+
+          multinode_servername=$(jq --compact-output --null-input '$ARGS.positional' --args -- "${array_servername[@]}")
+          echo "multinode_servername=$multinode_servername" >> $GITHUB_OUTPUT
+          echo "multinode_servername=$multinode_servername"
+          
