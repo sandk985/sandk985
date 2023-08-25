@@ -1,0 +1,66 @@
+name: GitHub runner docker image - build and push (once)
+
+on:  
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Provide branch name to build image'
+        required: true
+        default: 'develop'
+      tag_name:
+        description: 'Provide tag for image for versioning (example 1.0)'
+        required: true
+env: 
+  container_code: "containers"
+  image_name: "centos-github-runner"
+  namespace_name: self-hosted-runners
+  user_pat: ${{ secrets.DLG_REPO_TOKEN }}
+
+jobs:
+  annotations:
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Notice about branch
+        run: |
+          text="executed from branch: `echo ${GITHUB_REF#refs/heads/}`"
+          echo "::notice::${text}"
+
+  push-docker-img:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout docker repository
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ inputs.branch }}
+          
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: eu-west-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and push image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          cd ${{ env.container_code }}/image-github-runners
+          docker build \
+            -t ${{ env.ECR_REGISTRY }}/${{ env.image_name }}:${{ inputs.tag_name }} \
+            -t ${{ env.ECR_REGISTRY }}/${{ env.image_name }}:latest \
+            .
+          docker push \
+            --all-tags \
+            ${{ env.ECR_REGISTRY }}/${{ env.image_name }}
+      
+      - name: notice runner version
+        run: |
+          cd ${{ env.container_code }}/image-github-runners
+          gh_runner_version=$(grep 'ARG GITHUB_RUNNER_VERSION=' Dockerfile | awk -F'=' '{print $2}')
+          text="github runner version: `echo ${gh_runner_version}`"
+          echo "::notice::${text}"        
