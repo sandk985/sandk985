@@ -1,0 +1,50 @@
+name: Tools - Self Runner Stop Scheduler
+
+# Controls when the workflow will run
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 17 * * 1-5'
+
+env:
+  repository_owner: Direct-Line-Group
+  repository_devops: b4c-sdlc-infrastructure-tooling
+  app_name: tomcat
+  runner_type: stop
+
+jobs:
+  annotation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: annotation details
+        run: |
+          echo "::notice::Triggered_by : ${{ github.triggering_actor }}"
+          echo "::notice::Triggered_at : $(date +'%Y-%m-%dT%H:%M:%S') UTC"
+
+  self_runner_stop_scheduler:
+    name: Stop self-hosted-runner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      
+      - name: Stop available runners
+        run: | 
+          idle_runners=$(curl -s \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${{ secrets.DLG_REPO_TOKEN }}" \
+          https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners \
+          | jq -c '.runners[] | select(.status == "online" and .busy == 'false').id?')
+          
+          if [[ -n $idle_runners ]]; then
+            echo -e "Deleting all Self Hosted Runner which are in Idle state. Available runners:\n$idle_runners"
+            for id in $idle_runners; do
+              $(curl -s \
+                -X DELETE \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${{ secrets.DLG_REPO_TOKEN }}" \
+                https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/${id})
+            done
+          else
+            echo "No idle runners available to delete"
+          fi
