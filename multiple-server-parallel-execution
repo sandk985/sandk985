@@ -1,0 +1,367 @@
+name: Tools - Tomcat NFT Start and Stop Service
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: Application name
+        type: choice
+        required: true
+        options:
+          - tomcat
+      environment:
+        description: Select environment name
+        type: choice
+        required: true
+        options:
+          - 'rc2_nft-TEST'
+      task:
+        description: Action to be performed
+        type: choice
+        required: true
+        options:
+          - 'parallel status'
+          - 'parallel stop'
+          - 'parallel start'
+          - 'single status'
+          - 'single stop'
+          - 'single start'
+      server_host_name:
+        description: If task is on single server then select the node on which task need to run
+        type: choice
+        required: true
+        options:
+          - 'SELECT THE HOST NAME FOR TASK ON SINGLE SERVER'
+          - 'AWSBTL1ANTCA01.int.testb4c.awsplatform.co.uk'
+          - 'AWSBTL1ANTCB02.int.testb4c.awsplatform.co.uk'
+          - 'AWSBTL1ANTCA03.int.testb4c.awsplatform.co.uk'
+          - 'AWSBTL1ANTCB04.int.testb4c.awsplatform.co.uk'
+          - 'AWSBTL1ANTCA05.int.testb4c.awsplatform.co.uk'
+          - 'AWSBTL1ANTCB06.int.testb4c.awsplatform.co.uk'
+      task_timeout:
+        description: Timeout for completeing the task (in minutes)
+        type: string
+        required: true
+        default: "20"
+env:
+  repository_owner: Direct-Line-Group
+  repository_devops: b4c-sdlc-infrastructure-tooling
+jobs:
+  set_env_info:
+    runs-on: ubuntu-latest
+    outputs:
+      environment_name: ${{ steps.set-env-tier-name.outputs.environment_name }}
+      environment_tier: ${{ steps.set-env-tier-name.outputs.environment_tier }}
+    steps:
+      - name: Set environment tier and name
+        id: set-env-tier-name
+        run: |
+          environment_name=$(echo "${{ inputs.environment }}" | cut -d"-" -f1)
+          echo "environment_name=$environment_name" >> $GITHUB_OUTPUT
+          environment_tier=$(echo "${{ inputs.environment }}" | cut -d"-" -f2)
+          echo "environment_tier=$environment_tier" >> $GITHUB_OUTPUT
+  parameter:
+    runs-on: ubuntu-latest
+    needs:
+      - set_env_info
+    steps:
+      - name: Parameters used for Dev Health Check job
+        run: >
+          echo "::notice::Triggered_by : ${{ github.triggering_actor }}"
+
+          echo "::notice::Triggered_at : $(date +'%Y-%m-%dT%H:%M:%S') UTC"
+
+          echo "::notice::environment_tier : ${{ needs.set_env_info.outputs.environment_tier }}"
+
+          echo "::notice::environment_name : ${{ needs.set_env_info.outputs.environment_name }}"
+
+          echo "::notice::app_name : ${{ inputs.app_name }}"
+
+          echo "::notice::node_type : ${{ inputs.task }}"
+
+          echo "::notice::server_host_name : ${{ inputs.server_host_name }}"
+
+          echo "::notice::task_timeout : ${{ inputs.task_timeout }}"
+  get_env_info_multi_node:
+    runs-on: ubuntu-latest
+    needs:
+      - set_env_info
+    if: ${{ inputs.task == 'parallel status' || inputs.task == 'parallel stop'
+      ||  inputs.task == 'parallel start' }}
+    outputs:
+      multinode_serverhostname: ${{ steps.multinode-server-id.outputs.multinode_serverhostname }}
+      multinode_servername: ${{ steps.multinode-server-id.outputs.multinode_servername }}
+    steps:
+      - name: Assigning rc2_nft Parameters
+        id: multinode-server-id
+        run: >
+          multinode_servername='["AWSBTL1ANTCA01","AWSBTL1ANTCB02","AWSBTL1ANTCA03","AWSBTL1ANTCB04","AWSBTL1ANTCA05","AWSBTL1ANTCB06"]'
+
+          multinode_serverhostname='["AWSBTL1ANTCA01.int.testb4c.awsplatform.co.uk","AWSBTL1ANTCB02.int.testb4c.awsplatform.co.uk","aAWSBTL1ANTCA03.int.testb4c.awsplatform.co.uk","AWSBTL1ANTCB04.int.testb4c.awsplatform.co.uk","AWSBTL1ANTCA05.int.testb4c.awsplatform.co.uk","AWSBTL1ANTCB06.int.testb4c.awsplatform.co.uk"]'
+
+          echo "multinode_serverhostname=$multinode_serverhostname" >> $GITHUB_OUTPUT
+
+          echo "multinode_serverhostname=$multinode_serverhostname"
+
+          echo "multinode_servername=$multinode_servername" >> $GITHUB_OUTPUT
+
+          echo "multinode_servername=$multinode_servername"
+  host_parameter_multi_node:
+    runs-on: ubuntu-latest
+    needs: get_env_info_multi_node
+    if: ${{ inputs.task == 'parallel status' || inputs.task == 'parallel stop'
+      ||  inputs.task == 'parallel start' }}
+    steps:
+      - name: Host Parameters
+        run: >
+          echo "::notice::multinode_servername : ${{
+          needs.get_env_info_multi_node.outputs.multinode_servername }}"
+
+          echo "::notice::multinode_serverhostname : ${{ needs.get_env_info_multi_node.outputs.multinode_serverhostname }}"
+  check-available-runner:
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs:
+      - set_env_info
+      - get_env_info_multi_node
+    steps:
+      - name: Check for available runners
+        id: runner-available-check
+        run: >
+          idle_runners=$(curl -s \
+
+          -H "Accept: application/vnd.github+json" \
+
+          -H "Authorization: Bearer ${{ secrets.DLG_REPO_TOKEN }}" \
+
+          https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners \
+
+          | jq -c '.runners[] | select(.status == "online" and .busy == 'false').name?')
+
+
+          if [[ -n $idle_runners ]]; then
+            echo -e "Skipping runner creation. Available runners:\n$idle_runners"
+            echo "skip_get_runner=true" >> $GITHUB_ENV
+          else
+            echo "No idle runners available"
+            echo "skip_get_runner=false" >> $GITHUB_ENV
+          fi
+      - name: Trigger workflow to spin-up self-hosted-runner
+        if: ${{ env.skip_get_runner == 'false' }}
+        uses: convictional/trigger-workflow-and-wait@v1.6.5
+        with:
+          owner: ${{ env.repository_owner }}
+          repo: ${{ env.repository_devops }}
+          github_token: ${{ secrets.DLG_REPO_TOKEN }}
+          workflow_file_name: github-runner-deploy-once-default.yml
+          ref: develop
+          wait_interval: 10
+          client_payload: '{ "calling_repository_name" : "b4c-platform-automation",
+            "runner_cpu_limit" : "4", "runner_memory_limit" : "24Gi",
+            "one_off_instance_flag" : "enable" }'
+          propagate_failure: true
+          trigger_workflow: true
+          wait_workflow: true
+  service-task:
+    name: Perform the task on the server
+    runs-on: self-hosted
+    if: ${{ always() }}
+    needs:
+      - check-available-runner
+      - set_env_info
+      - get_env_info_multi_node
+    environment:
+      name: ${{ needs.set_env_info.outputs.environment_tier }}
+    outputs:
+      single_node_output: ${{ steps.single-node.outputs.healthcheck_output }}
+      multi_node_output: ${{ steps.multi-node.outputs.healthcheck_output }}
+    steps:
+      - name: Status check on single server.
+        if: ${{ inputs.task == 'single status' }}
+        id: single-status
+        run: >
+          ssh_username=${{ secrets.SSH_INSTALL_USERNAME }}
+
+
+          ssh_password=${{ secrets.SSH_INSTALL_PASSWORD }}
+
+
+          sshpass -p $ssh_password ssh -o StrictHostKeyChecking=no $ssh_username@${{ inputs.server_host_name }} '
+            echo "Tomcat App - Checking the service status on $serverhostname"
+            Process_check=$( ps -ef | grep tomcat | grep -v grep | awk "{print $2}" )
+            if [ -z $Process_check ]; then
+              echo "**** Tomcat Process Not Running on $serverhostname ****"
+            else
+              echo "**** Tomcat Process Already Running ****"
+            fi
+      - name: Stop service on single server.
+        if: ${{ inputs.task == 'single stop' }}
+        id: single-stop
+        run: >
+          ssh_username=${{ secrets.SSH_INSTALL_USERNAME }}
+
+          ssh_password=${{ secrets.SSH_INSTALL_PASSWORD }}
+
+          sshpass -p $ssh_password ssh -o StrictHostKeyChecking=no $ssh_username@${{ inputs.server_host_name }} '
+            echo "Tomcat App - Checking the service status on $serverhostname"
+            Process_check=$( ps -ef | grep tomcat | grep -v grep | awk "{print $2}" )
+            if [ -z $Process_check ]; then
+              echo "**** Tomcat Process Not Running. Hence no need to stop ****"
+            else
+              echo "**** Tomcat Process Already Running. Stopping now ****"
+              sudo service tomcat stop
+              sleep 10
+              Process_check=$( ps -ef | grep tomcat | grep -v grep | awk "{print $2}" )
+              if [ -z $Process_check ]; then
+                echo "**** Tomcat process stopped ****"
+              else
+                echo "**** Tomcat process is still running. Please check with DevOps engineer for further analysis ****"
+              fi
+            fi
+      - name: Start service on single server.
+        if: ${{ inputs.task == 'single start' }}
+        id: single-start
+        run: >
+          ssh_username=${{ secrets.SSH_INSTALL_USERNAME }}
+
+          ssh_password=${{ secrets.SSH_INSTALL_PASSWORD }}
+
+          sshpass -p $ssh_password ssh -o StrictHostKeyChecking=no $ssh_username@${{ inputs.server_host_name }} '
+            echo "Tomcat App - Checking the service status on $serverhostname"
+            Process_check=$( ps -ef | grep tomcat | grep -v grep | awk "{print $2}" )
+            if [ -z $Process_check ]; then
+              echo "**** Tomcat Process Not Running. Starting now ****"
+              sudo service tomcat start
+              sleep 5
+              Process_check=$( ps -ef | grep tomcat | grep -v grep | awk "{print $2}" )
+              if [ -z $Process_check ]; then
+                echo "**** Tomcat process not running. Please check with DevOps engineer for further analysis ****"
+              else
+                echo "**** Tomcat process is running now ****"
+              fi
+            else
+              echo "**** Tomcat process is already running ****"
+            fi
+      - name: Parallel service status.
+        if: ${{ inputs.task == 'parallel status' }}
+        id: parallel-status
+        run: >
+          ssh_username=${{ secrets.SSH_INSTALL_USERNAME }}
+
+          ssh_password=${{ secrets.SSH_INSTALL_PASSWORD }}
+
+
+          #put JSON string in single quotes as a value of temp variable in order to keep double quotes in JSON string.
+
+          temp='${{ needs.get_env_info_multi_node.outputs.multinode_serverhostname }}'
+
+
+          #get JSON string from inputs.app_hostname and convert it back to bash array. This and previous step needs to be executed
+
+          #in all steps, because GitHub Actions doesn't support arrays as a value of inputs/outputs or envs
+
+          multinode_serverhostname=($(echo $temp | jq -r '.[]'))
+
+          echo "multinode_serverhostname : ${multinode_serverhostname[@]}"
+
+
+          for hostname in "${multinode_serverhostname[@]}"
+
+          do
+            sshpass -p $ssh_password ssh -o StrictHostKeyChecking=no $ssh_username@$hostname '
+              echo "Tomcat App - Checking the service status on $serverhostname"
+            	Process_check=$( ps -ef | grep tomcat | grep -v grep | awk "{print $2}" )
+            	if [ -z $Process_check ]; then
+              echo "**** Tomcat Process Not Running on $serverhostname ****"
+            else
+              echo "**** Tomcat Process Already Running ****"
+            fi
+           ' 
+          done
+      - name: Parallel service stop.
+        if: ${{ inputs.task == 'parallel stop' }}
+        id: parallel-stop
+        run: >+
+          ssh_username=${{ secrets.SSH_INSTALL_USERNAME }}
+
+          ssh_password=${{ secrets.SSH_INSTALL_PASSWORD }}
+
+
+          #put JSON string in single quotes as a value of temp variable in order to keep double quotes in JSON string.
+
+          temp='${{ needs.get_env_info_multi_node.outputs.multinode_serverhostname }}'
+
+
+          #get JSON string from inputs.app_hostname and convert it back to bash array. This and previous step needs to be executed
+
+          #in all steps, because GitHub Actions doesn't support arrays as a value of inputs/outputs or envs
+
+          multinode_serverhostname=($(echo $temp | jq -r '.[]'))
+
+
+          multinode_serverhostname_rev=$(echo "${multinode_serverhostname[@]}" | tr ' ' '\n' | tac | xargs )
+
+
+          for hostname in ${multinode_serverhostname_rev[@]}
+
+          do
+            sshpass -p $ssh_password ssh -o StrictHostKeyChecking=no $ssh_username@$hostname '
+             echo "Tomcat App - Checking the service status"
+            Process_check=$( ps -ef | grep tomcat | grep -v grep | awk "{print $2}" )
+            if [ -z $Process_check ]; then
+              echo "**** Tomcat Process Not Running. Starting now ****"
+              sudo service tomcat stop
+              sleep 5
+              Process_check=$( ps -ef | grep tomcat | grep -v grep | awk "{print $2}" )
+              if [ -z $Process_check ]; then
+                echo "**** Tomcat process not running. Please check with DevOps engineer for further analysis ****"
+              else
+                echo "**** Tomcat process is running now ****"
+              fi
+            else
+              echo "**** Tomcat process is already running ****"
+            fi
+
+
+           
+      - name: Parallel service start.
+        if: ${{ inputs.task == 'parallel start' }}
+        id: parallel-start
+        run: >
+          ssh_username=${{ secrets.SSH_INSTALL_USERNAME }}
+
+          ssh_password=${{ secrets.SSH_INSTALL_PASSWORD }}
+
+
+          #put JSON string in single quotes as a value of temp variable in order to keep double quotes in JSON string.
+
+          temp='${{ needs.get_env_info_multi_node.outputs.multinode_serverhostname }}'
+
+
+          #get JSON string from inputs.app_hostname and convert it back to bash array. This and previous step needs to be executed
+
+          #in all steps, because GitHub Actions doesn't support arrays as a value of inputs/outputs or envs
+
+          multinode_serverhostname=($(echo $temp | jq -r '.[]'))
+
+
+          for hostname in "${multinode_serverhostname[@]}"
+
+          do
+            if [ $hostname == "${multinode_serverhostname[0]}" ]; then
+              sshpass -p $ssh_password ssh -o StrictHostKeyChecking=no $ssh_username@$hostname '
+                echo "Tomcat App - Checking the service status"
+            Process_check=$( ps -ef | grep tomcat | grep -v grep | awk "{print $2}" )
+            if [ -z $Process_check ]; then
+              echo "**** Tomcat Process Not Running. Starting now ****"
+            sudo service tomcat start
+              sleep 5
+              Process_check=$( ps -ef | grep tomcat | grep -v grep | awk "{print $2}" )
+              if [ -z $Process_check ]; then
+                echo "**** Tomcat process not running. Please check with DevOps engineer for further analysis ****"
+              else
+                echo "**** Tomcat process is running now ****"
+              fi
+            else
+              echo "**** Tomcat process is already running ****"
+            fi 
+          done
