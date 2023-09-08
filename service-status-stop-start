@@ -20,6 +20,17 @@ on:
         - 'rc3_sit-DEV'
         - 'rc3_sittt-DEV'
         - 'rc3_sittt2-DEV'
+        - 'rc3_e2ett2-TEST'
+        - 'scp_uat-TEST'
+        - 'rc2_uat3-TEST'
+        - 'rc3_e2ett-TEST'
+        - 'rc4_e2ett2-TEST'
+        - 'rc2_e2ett6-TEST'
+        - 'r1c_e2e-TEST'
+        - 'end_uat-TEST'
+        - 'end_trn-TEST'
+        - 'rc2_e2ett5-TEST'
+        - 'rc2_uat2-TEST'
       task:
         description: "Action to be performed"
         type: choice
