@@ -1,0 +1,46 @@
+name: Tools - Self Runner Start Scheduler
+
+# Controls when the workflow will run
+on:
+  workflow_dispatch:
+    
+env:
+  repository_owner: Direct-Line-Group
+  repository_devops: b4c-sdlc-infrastructure-tooling
+  app_name: tomcat
+  runner_type: start
+
+jobs:
+
+  annotation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: annotation details
+        run: |
+          echo "::notice::Triggered_by : ${{ github.triggering_actor }}"
+          echo "::notice::Triggered_at : $(date +'%Y-%m-%dT%H:%M:%S') UTC"
+  
+  create-new-runner:
+    name: Create new self-hosted-runner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      
+      - name: Trigger workflow to spin-up self-hosted-runner
+        uses: convictional/trigger-workflow-and-wait@v1.6.5
+        with:
+          owner: ${{ env.repository_owner }}
+          repo: ${{ env.repository_devops }}
+          github_token: ${{ secrets.DLG_REPO_TOKEN }}
+          workflow_file_name: github-runner-deploy-once-default.yml
+          ref: develop
+          wait_interval: 10
+          client_payload: '{
+            "calling_repository_name" : "b4c-platform-automation",
+            "runner_cpu_limit" : "2",
+            "runner_memory_limit" : "8Gi",
+            "one_off_instance_flag" : "disable" }'
+          propagate_failure: true
+          trigger_workflow: true
+          wait_workflow: true
